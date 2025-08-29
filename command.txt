@@ -1,0 +1,32 @@
+; boot.asm - Premier bootloader de MonOS
+BITS 16
+ORG 0x7C00
+
+start:
+    ; Nettoyer les registres
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov sp, 0x7C00
+    
+    ; Afficher le message
+    mov ah, 0x0e        ; Function teletype BIOS
+    mov si, msg         ; Pointeur vers le message
+
+print_loop:
+    lodsb               ; Charger le caractère suivant dans AL
+    cmp al, 0           ; Vérifier fin de chaîne
+    je done
+    int 0x10            ; Appel BIOS pour afficher
+    jmp print_loop
+
+done:
+    hlt                 ; Arrêter le processeur
+    jmp done           ; Boucle infinie au cas où
+
+msg db 'Bienvenue dans MonOS!', 13, 10, 0  ; Message avec retour ligne
+
+; Remplissage et signature de boot
+times 510-($-$$) db 0
+dw 0xAA55
