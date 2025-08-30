@@ -1,140 +1,253 @@
 [BITS 16]
-org 0x7C00
+[ORG 0x7C00]
 
 start:
-    cli
+    ; Initialisation des segments
+    cli                     ; Désactive les interruptions
     xor ax, ax
     mov ds, ax
     mov es, ax
     mov ss, ax
     mov sp, 0x7C00
+    sti                     ; Réactive les interruptions
 
-    ; Affiche message initial
-    mov si, msg_init
-    call print_16
+    ; Affichage d'un message en mode réel
+    mov si, msg_real_mode
+    call print_string_16
 
-    ; Active A20
+    ; Activation de la ligne A20
     call enable_a20
-    mov si, msg_a20
-    call print_16
 
-    ; Charge le kernel (16 secteurs à 0x8000)
-    mov ah, 0x02
-    mov al, 16          ; Nombre de secteurs
-    mov ch, 0           ; Cylindre 0
-    mov cl, 2           ; Premier secteur après le bootloader
-    mov dh, 0           ; Tête 0
-    mov dl, 0x80        ; Disque principal
-    mov bx, 0x8000      ; Adresse de chargement
-    int 0x13
-    jc .disk_error
-
-    mov si, msg_kernel_loaded
-    call print_16
-
-    ; Charge GDT
+    ; Chargement de la GDT
     lgdt [gdt_descriptor]
-    mov si, msg_gdt
-    call print_16
 
-    cli
-    ; Passe en mode protégé
+    ; Passage en mode protégé
     mov eax, cr0
-    or eax, 1
+    or eax, 1               ; Active le bit PE (Protection Enable)
     mov cr0, eax
 
-    jmp 0x08:protected_entry  ; Jump far vers le code 32 bits
+    ; Saut vers le code en mode protégé
+    jmp CODE_SEG:protected_mode
 
-.disk_error:
-    mov si, msg_disk_error
-    call print_16
-    jmp $
-
-; -------------------------------
-; A20
-enable_a20:
-    in al, 0x64
-.wait:
-    test al, 2
-    jnz .wait
-    mov al, 0xD1
-    out 0x64, al
-.wait2:
-    in al, 0x64
-    test al, 2
-    jnz .wait2
-    mov al, 0xDF
-    out 0x60, al
-.wait3:
-    in al, 0x64
-    test al, 2
-    jnz .wait3
-    ret
-
-; -------------------------------
-; Affichage en mode réel
-print_16:
-    pusha
-.next_char:
-    lodsb
-    test al, al
-    jz .done
-    mov ah, 0x0E
-    mov bx, 0x0007
-    int 0x10
-    jmp .next_char
+; Fonction pour afficher une chaîne en mode réel
+print_string_16:
+    mov ah, 0x0E            ; Fonction teletype
+.loop:
+    lodsb                   ; Charge le caractère suivant
+    cmp al, 0
+    je .done
+    int 0x10                ; Interruption BIOS pour affichage
+    jmp .loop
 .done:
-    popa
     ret
 
-; -------------------------------
+; === FONCTIONS VGA (VERSION COMPACTE) ===
+
+; Configuration complète du mode VGA 320x200
+set_vga_mode:
+    pushad
+    
+    ; Désactiver l'affichage pendant la configuration
+    mov dx, 0x3DA
+    in al, dx
+    mov dx, 0x3C0
+    mov al, 0x00
+    out dx, al
+    
+    ; Configuration séquenceur
+    mov dx, 0x3C4
+    mov al, 0x02
+    out dx, al
+    inc dx
+    mov al, 0x0F
+    out dx, al
+    
+    ; Configuration contrôleur graphique  
+    mov dx, 0x3CE
+    mov al, 0x06
+    out dx, al
+    inc dx
+    mov al, 0x05    ; A0000-AFFFF, mode graphique
+    out dx, al
+    
+    ; Mode couleur
+    mov dx, 0x3C2
+    mov al, 0x63    ; 25MHz, enable RAM
+    out dx, al
+    
+    ; Réactiver l'affichage
+    mov dx, 0x3DA
+    in al, dx
+    mov dx, 0x3C0
+    mov al, 0x20
+    out dx, al
+    
+    popad
+    ret
+
+; Motif de test simple mais visible
+draw_test_pattern:
+    pushad
+    mov edi, 0xA0000
+    
+    ; Remplir l'écran avec un dégradé bleu
+    mov ecx, 64000
+    mov al, 1        ; Couleur de base (bleu)
+.fill_loop:
+    mov [edi], al
+    inc edi
+    inc al
+    and al, 0x0F     ; Garder dans les couleurs 0-15
+    add al, 1        ; Commencer à 1 (éviter le noir)
+    loop .fill_loop
+    
+    ; Rectangle rouge bien visible 40x30 au centre
+    mov edi, 0xA0000 + (85*320) + 140  ; Centre de l'écran
+    mov edx, 30      ; Hauteur
+.rect_y:
+    mov ecx, 40      ; Largeur
+    push edi
+.rect_x:
+    mov byte [edi], 4  ; Rouge vif
+    inc edi
+    loop .rect_x
+    pop edi
+    add edi, 320     ; Ligne suivante
+    dec edx
+    jnz .rect_y
+    
+    popad
+    ret
+
+; Activation de la ligne A20 (méthode simple)
+enable_a20:
+    in al, 0x92
+    or al, 2
+    out 0x92, al
+    ret
+
+; === DÉBUT DU CODE EN MODE PROTÉGÉ ===
 [BITS 32]
-protected_entry:
-    ; Segments 32 bits
-    mov ax, 0x10
+protected_mode:
+    ; Désactiver les interruptions (critique en mode protégé)
+    cli
+    
+    ; Configuration des segments
+    mov ax, DATA_SEG
     mov ds, ax
+    mov ss, ax
     mov es, ax
     mov fs, ax
     mov gs, ax
-    mov ss, ax
-    mov esp, 0x90000
 
-    ; Contrôle vers le kernel chargé à 0x8000
-    jmp 0x08:0x8000
+    ; Configuration de la pile (adresse plus basse et sûre)
+    mov esp, 0x7000
 
-; -------------------------------
-align 8
+    ; Effacement de l'écran
+    call clear_screen
+
+    ; Affichage du message principal
+    mov esi, msg_protected_mode
+    mov edi, 0xB8000        ; Adresse de la mémoire vidéo
+    call print_string_32
+
+    ; Affichage d'un message coloré
+    mov esi, msg_welcome
+    mov edi, 0xB8000 + (2 * 80 * 2)  ; Ligne 2
+    mov ah, 0x2F            ; Couleur: texte blanc sur fond vert
+    call print_string_color_32
+
+    ; Attendre un peu
+    mov ecx, 0x1FFFFF
+wait_loop:
+    dec ecx
+    jnz wait_loop
+
+    ; Passage en mode VGA 320x200 256 couleurs
+    call set_vga_mode
+
+    ; Dessiner des pixels de test
+    call draw_test_pattern
+
+    ; Boucle infinie stable
+halt:
+    hlt                     ; Met le processeur en veille
+    jmp halt                ; Boucle sur halt
+
+; Fonction pour effacer l'écran en mode protégé
+clear_screen:
+    mov edi, 0xB8000
+    mov ecx, 80 * 25        ; 80 colonnes x 25 lignes
+    mov ax, 0x0720          ; Espace avec attributs (noir sur gris)
+.loop:
+    mov [edi], ax
+    add edi, 2
+    loop .loop
+    ret
+
+; Fonction pour afficher une chaîne en mode protégé (blanc sur noir)
+print_string_32:
+    mov ah, 0x0F            ; Attribut: blanc sur noir
+.loop:
+    lodsb
+    cmp al, 0
+    je .done
+    mov [edi], ax           ; Écrit le caractère et l'attribut
+    add edi, 2
+    jmp .loop
+.done:
+    ret
+
+; Fonction pour afficher une chaîne avec couleur personnalisée
+print_string_color_32:
+.loop:
+    lodsb
+    cmp al, 0
+    je .done
+    mov [edi], ax           ; ah contient déjà la couleur
+    add edi, 2
+    jmp .loop
+.done:
+    ret
+
+; === DONNÉES ===
+msg_real_mode db 'Boot -> Mode protege -> VGA', 13, 10, 0
+msg_protected_mode db 'Mode protege OK! VGA...', 0
+msg_welcome db 'VGA 320x200 en cours...', 0
+
+; === GLOBAL DESCRIPTOR TABLE (GDT) ===
 gdt_start:
-    dq 0x0                 ; Null descriptor
 
-    ; Code segment
-    dw 0xFFFF
-    dw 0x0000
-    db 0x00
-    db 10011010b
-    db 11001111b
-    db 0x00
+gdt_null:                   ; Descripteur null obligatoire
+    dd 0x0
+    dd 0x0
 
-    ; Data segment
-    dw 0xFFFF
-    dw 0x0000
-    db 0x00
-    db 10010010b
-    db 11001111b
-    db 0x00
+gdt_code:                   ; Segment de code
+    dw 0xFFFF               ; Limite (bits 0-15)
+    dw 0x0                  ; Base (bits 0-15)
+    db 0x0                  ; Base (bits 16-23)
+    db 10011010b            ; Flags: present, ring 0, code segment
+    db 11001111b            ; Limite (bits 16-19) + flags
+    db 0x0                  ; Base (bits 24-31)
+
+gdt_data:                   ; Segment de données
+    dw 0xFFFF               ; Limite (bits 0-15)
+    dw 0x0                  ; Base (bits 0-15)
+    db 0x0                  ; Base (bits 16-23)
+    db 10010010b            ; Flags: present, ring 0, data segment
+    db 11001111b            ; Limite (bits 16-19) + flags
+    db 0x0                  ; Base (bits 24-31)
 
 gdt_end:
 
 gdt_descriptor:
-    dw gdt_end - gdt_start - 1
-    dd gdt_start
+    dw gdt_end - gdt_start - 1    ; Taille de la GDT
+    dd gdt_start                  ; Adresse de la GDT
 
-; -------------------------------
-msg_init db "Bootloader initialisation...", 13,10,0
-msg_a20 db "Ligne A20 activée.", 13,10,0
-msg_kernel_loaded db "Kernel loaded.",13,10,0
-msg_gdt db "GDT chargée.",13,10,0
-msg_disk_error db "Disk read error!",13,10,0
+; Constantes pour les sélecteurs de segments
+CODE_SEG equ gdt_code - gdt_start
+DATA_SEG equ gdt_data - gdt_start
 
+; Signature du secteur de démarrage
 times 510-($-$$) db 0
 dw 0xAA55
