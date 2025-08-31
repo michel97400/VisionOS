@@ -1,21 +1,38 @@
-ENTRY(kernel_main)
+ENTRY(_start)
+
 SECTIONS
 {
-    . = 0x100000;   /* adresse où le noyau sera chargé par GRUB */
+    . = 1M;
 
-    .text :
+    /* Section multiboot DOIT être la première et dans les 8KB */
+    .multiboot : ALIGN(4K)
     {
-        *(.text)
+        KEEP(*(.multiboot.header))
     }
 
-    .data :
+    .text : ALIGN(4K)  
+    {
+        *(.multiboot.text)
+        *(.text)
+        *(.text.*)
+    }
+
+    .rodata : ALIGN(4K)
+    {
+        *(.rodata)
+        *(.rodata.*)
+    }
+
+    .data : ALIGN(4K)
     {
         *(.data)
+        *(.data.*)
     }
 
-    .bss :
+    .bss : ALIGN(4K)
     {
-        *(.bss)
         *(COMMON)
+        *(.bss)
+        *(.bss.*)
     }
 }
